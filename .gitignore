@@ -1,5 +1,6 @@
 data/raw/*
 data/processed/*
+outputs
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep
