@@ -43,8 +43,7 @@ MAX_DURATION = 1920
 MIN_PITCH = 21
 MAX_PITCH = 108
 
-SPECIAL_TOKENS = ["PAD", "BOS", "EOS", "EOE"]  # EOE = end-of-event
-
+SPECIAL_TOKENS = ["PAD", "BOS", "EOS", "EOE"] 
 
 class EventTokenizer:
 
@@ -124,7 +123,7 @@ class EventTokenizer:
             if tok == "EOS":
                 break
             if tok.startswith("GAP_"):
-                flush()                       # close previous event
+                flush()
                 cur_gap = int(tok[4:])
                 pending_pitch = None
             elif tok == "EOE":
@@ -148,7 +147,6 @@ def make_windows(stream, block_size, stride=None):
         raise ValueError(
             f"Stream too short ({len(stream)}) for block_size {block_size}."
         )
-    # max start s.t. a length-block_size window AND its +1 target both fit
     starts = list(range(0, len(stream) - block_size, stride))
     if not starts:
         starts = [0]
@@ -245,29 +243,27 @@ class CausalSelfAttention(nn.Module):
         self.proj = nn.Linear(cfg.n_embd, cfg.n_embd)
         self.attn_drop = nn.Dropout(cfg.dropout)
         self.resid_drop = nn.Dropout(cfg.dropout)
-        # lower-triangular mask, registered as a buffer so it moves with .to(device)
         mask = torch.tril(torch.ones(cfg.block_size, cfg.block_size)).view(
             1, 1, cfg.block_size, cfg.block_size
         )
         self.register_buffer("mask", mask)
-        # expose the attention weights from the last forward for visualisation
         self.last_attn = None
 
     def forward(self, x):
         B, T, C = x.shape
         q, k, v = self.qkv(x).split(self.n_embd, dim=2)
         hs = C // self.n_head
-        q = q.view(B, T, self.n_head, hs).transpose(1, 2)   # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, hs).transpose(1, 2)
         k = k.view(B, T, self.n_head, hs).transpose(1, 2)
         v = v.view(B, T, self.n_head, hs).transpose(1, 2)
 
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(hs)     # (B, nh, T, T)
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(hs)
         att = att.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
         self.last_attn = att.detach()
         att = self.attn_drop(att)
 
-        y = att @ v                                         # (B, nh, T, hs)
+        y = att @ v 
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_drop(self.proj(y))
 
@@ -286,7 +282,7 @@ class Block(nn.Module):
         )
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))   # pre-norm residual
+        x = x + self.attn(self.ln1(x))
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -301,7 +297,6 @@ class EventTransformer(nn.Module):
         self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
         self.ln_f = nn.LayerNorm(cfg.n_embd)
         self.head = nn.Linear(cfg.n_embd, cfg.vocab_size, bias=False)
-        # weight tying improves quality and saves params
         self.head.weight = self.tok_emb.weight
         self.apply(self._init_weights)
 
@@ -316,17 +311,16 @@ class EventTransformer(nn.Module):
 
     def forward(self, x):
         B, T = x.shape
-        assert T <= self.cfg.block_size, "sequence longer than block_size"
+        assert T <= self.cfg.block_size,
         tok = self.tok_emb(x)
         pos = self.pos_emb[:, :T, :]
         h = self.drop(tok + pos)
         for block in self.blocks:
             h = block(h)
         h = self.ln_f(h)
-        return self.head(h), None   # (logits, _) to match LSTM's signature
+        return self.head(h), None
 
     def attention_maps(self):
-        """List of last-forward attention tensors, one per layer."""
         return [blk.attn.last_attn for blk in self.blocks]
 
 
@@ -335,7 +329,6 @@ def count_params(model):
 
 
 def _cosine_warmup_factor(step, total_steps, warmup_steps):
-    """LR multiplier in [0, 1]: linear warmup then cosine decay to ~0."""
     if warmup_steps > 0 and step < warmup_steps:
         return (step + 1) / warmup_steps
     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
@@ -369,8 +362,6 @@ def train_model(
     gen = torch.Generator().manual_seed(seed)
     history = {"train_loss": [], "val_loss": [], "val_ppl_token": []}
 
-    # Track the best-validation checkpoint so we can restore it at the end
-    # instead of keeping the final (possibly over-fit) weights.
     best_val, best_state, best_epoch = float("inf"), None, None
 
     for epoch in range(1, epochs + 1):
@@ -399,7 +390,6 @@ def train_model(
         history["val_loss"].append(va_loss)
         history["val_ppl_token"].append(math.exp(va_loss) if va_loss == va_loss else float("nan"))
 
-        # keep a CPU copy of the weights at the best validation loss so far
         if va_loss == va_loss and va_loss < best_val:
             best_val = va_loss
             best_epoch = epoch
@@ -411,7 +401,6 @@ def train_model(
                 msg += f" | val loss {va_loss:.4f} | val ppl/token {math.exp(va_loss):.2f}"
             print(msg)
 
-    # restore the best-validation weights (early-stopping by checkpoint)
     if best_state is not None:
         model.load_state_dict(best_state)
         print(f"Restored best checkpoint from epoch {best_epoch} "
@@ -444,7 +433,6 @@ def generate(
     model, tokenizer, max_tokens=600, temperature=1.0, top_k=None, top_p=None,
     device=None, seed=None, prompt_ids=None, stop_at_eos=True,
 ):
-    """Returns a list of event dicts ready for save_event_midi."""
     device = device or next(model.parameters()).device
     model.eval()
     if seed is not None:
@@ -462,7 +450,6 @@ def generate(
             logits, _ = model(ctx)
             logits = logits[0, -1]
         else:
-            # feed only the newest token, carrying LSTM hidden state forward
             step = torch.tensor([[ids[-1]]], dtype=torch.long, device=device)
             logits, hidden = model(step, hidden)
             logits = logits[0, -1]
